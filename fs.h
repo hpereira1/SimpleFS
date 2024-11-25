@@ -2,7 +2,7 @@
 #define FS_H
 
 #include "disk.h"
-
+#include <vector> 
 class INE5412_FS
 {
 public:
@@ -54,6 +54,7 @@ public:
 
 private:
     Disk *disk;
+    std::vector<int> fblocks_bitmap;
 };
 
 #endif
