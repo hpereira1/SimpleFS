@@ -149,7 +149,7 @@ int INE5412_FS::fs_mount()
 }
 void INE5412_FS::inode_load( int inumber, class fs_inode *inode )
 {
-        if (inumber < 1 || inumber > superblock.ninodes) {
+    if (inumber < 1 || inumber > superblock.ninodes) {
         cerr << "ERROR: Invalid inumber" << endl;
         inode->isvalid = 0;
         return;
@@ -256,15 +256,103 @@ int INE5412_FS::fs_delete(int inumber)
 
 int INE5412_FS::fs_getsize(int inumber)
 {
+    if (!mounted) {
+        cerr << "ERROR: Disk is not mounted" << endl;
+        return 0;
+    }
+    fs_inode inode;
+    inode_load(inumber, &inode);
+    if (inode.isvalid) {
+        return inode.size;
+    }
+    cerr << "ERROR: Invalid inumber" << endl;
 	return -1;
 }
 
 int INE5412_FS::fs_read(int inumber, char *data, int length, int offset)
 {
-	return 0;
+    if (!mounted) {
+        cerr << "ERROR: Disk is not mounted" << endl;
+        return 0;
+    }
+
+    fs_inode inode;
+
+    inode_load(inumber, &inode);
+
+    if(!inode.isvalid) {
+        cerr << "ERROR: Invalid inumber" << endl;
+        return 0;
+    }
+    int inode_size = fs_getsize(inumber);
+
+    if (offset > inode_size) {
+        cerr << "ERROR: offset is equal or greater than inode size" << endl;
+        return 0;
+    }
+    if (inode_size == 0) {
+        cerr << "ERROR: inode size is 0" << endl;
+        return 0;
+    }
+
+    int length_to_read = min(length, inode_size - offset);
+
+    int block_i = offset / Disk::DISK_BLOCK_SIZE;
+    int block_offset = offset % Disk::DISK_BLOCK_SIZE;
+
+    int bytes_read = 0;
+
+    while (bytes_read < length_to_read) {
+        int block_num = get_dblocknum(inode, block_i);
+        if (block_num == 0) {
+            cerr << "ERROR: block number is 0" << endl;
+            return 0;
+        }
+
+        union fs_block block;
+        disk->read(block_num, block.data);
+
+        int first_block_bytes = Disk::DISK_BLOCK_SIZE - block_offset;   // bytes left to read in the first block
+        int bytes_to_read = min(length_to_read - bytes_read, first_block_bytes);
+
+        memcpy(data + bytes_read, block.data + block_offset, bytes_to_read);
+
+        bytes_read += bytes_to_read;
+        block_i++;
+        block_offset = 0;   // this offset is only used in the first block
+    }
+    return bytes_read;
 }
+
 
 int INE5412_FS::fs_write(int inumber, const char *data, int length, int offset)
 {
 	return 0;
 }
+
+int INE5412_FS::get_dblocknum(fs_inode &inode, int block_i) {
+    int block_num;
+
+    if (block_i < POINTERS_PER_INODE) {
+        block_num = inode.direct[block_i];
+        return block_num;
+    } 
+
+    if (inode.indirect == 0) {
+        cerr << "ERROR: Indirect block is not allocated" << endl;
+        return 0;
+    }
+
+    union fs_block ind_block;
+
+    disk->read(inode.indirect, ind_block.data);
+
+    int indblock_i = block_i - POINTERS_PER_INODE;
+    if (indblock_i >= POINTERS_PER_BLOCK) {
+        cerr << "ERROR: Block index is out of range" << endl;
+        return 0;
+    }
+
+    block_num = ind_block.pointers[indblock_i];
+    return block_num;
+} 

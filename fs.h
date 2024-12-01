@@ -3,6 +3,7 @@
 
 #include "disk.h"
 #include <vector> 
+#include <cstring>
 class INE5412_FS
 {
 public:
@@ -53,6 +54,8 @@ public:
     int  fs_write(int inumber, const char *data, int length, int offset);
     void inode_load( int inumber, class fs_inode *inode );
     void inode_save( int inumber, class fs_inode *inode );
+    int get_dblocknum(fs_inode &inode, int block_i); 
+
 private:
     Disk *disk;
     std::vector<int> fblocks_bitmap;
