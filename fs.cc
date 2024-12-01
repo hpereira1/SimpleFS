@@ -3,8 +3,14 @@
 
 int INE5412_FS::fs_format()
 {
+    if (mounted) {
+        cerr << "ERROR: Disk is already mounted" << endl;
+        return 0;
+    }
+
 	union fs_block block;
 	disk->read(0, block.data);
+
 	int nblocks = disk->size();
 	int ninodeblocks = ceil(nblocks*0.1);
 	int ninodes = ninodeblocks*INODES_PER_BLOCK;
@@ -29,8 +35,8 @@ int INE5412_FS::fs_format()
 	}
 
 	for (int i = ninodeblocks + 1; i < nblocks; i++) {
-		for (int j = 0; j < POINTERS_PER_BLOCK; j++) {
-			block.pointers[j] = 0;
+		for (int j = 0; j < Disk::DISK_BLOCK_SIZE; j++) {
+			block.data[j] = 0;
 		}
 		disk->write(i, block.data);
 	}
@@ -82,7 +88,7 @@ void INE5412_FS::fs_debug()
         }    
     }
 	}
-void print_bitmap(std::vector<int> fblocks_bitmap) {
+void print_bitmap(const std::vector<int>& fblocks_bitmap) {
     cout << "Bitmap: ";
     for (std::size_t i = 0; i < fblocks_bitmap.size(); ++i) {
         cout << fblocks_bitmap[i] << " ";
@@ -92,83 +98,160 @@ void print_bitmap(std::vector<int> fblocks_bitmap) {
 
 int INE5412_FS::fs_mount()
 {
-	union fs_block block;
-	disk->read(0, block.data);
-	if (block.super.magic != FS_MAGIC) {
-		return 0;
-	}
-	int nblocks = block.super.nblocks;
-	fblocks_bitmap.assign(block.super.nblocks,0);	
-	if (nblocks != fblocks_bitmap.size()) {
-		cout << "nblocks != fblocks_bitmap.size()" << endl;
-		return 0;
-	}
-	print_bitmap(fblocks_bitmap);
-	fblocks_bitmap[0] = 1;
-	print_bitmap(fblocks_bitmap);
-	for (int i = 1; i <= block.super.ninodeblocks; i++) {
-    if (i < 0 || i >= nblocks) {
-        cerr << "ERROR: Inode block (" << i << ") is out of bounds!" << endl;
+    union fs_block block;
+    disk->read(0, block.data);
+    fs_superblock superblock = block.super;
+    if (superblock.magic != FS_MAGIC) {
+        cerr << "ERROR: Invalid magic number!" << endl;
         return 0;
     }
-    disk->read(i, block.data);
 
-    for (int j = 0; j < INODES_PER_BLOCK; j++) {
-        if (block.inode[j].isvalid) {
-            if (i < 0 || i >= nblocks) {
-                cerr << "ERROR: Inode block (" << i << ") is out of bounds!" << endl;
-                return 0;
-            }
-            fblocks_bitmap[i] = 1;
+    fblocks_bitmap.clear();
+    fblocks_bitmap.resize(superblock.nblocks, 0);
 
-            for (int a = 0; a < POINTERS_PER_INODE; a++) {
-                if (block.inode[j].direct[a]) {
-                    if (block.inode[j].direct[a] < 0 || block.inode[j].direct[a] >= nblocks) {
-                        cerr << "ERROR: Direct block (" << block.inode[j].direct[a] << ") is out of bounds!" << endl;
-                        return 0;
+    fblocks_bitmap[0] = 1; 
+    cout << "fbsize: " << fblocks_bitmap.size() << endl;
+    cout << "nblocks: " << superblock.nblocks << endl;
+    cout << "ninodeblocks: " << superblock.ninodeblocks << endl;
+    cout << "ninodes: " << superblock.ninodes << endl;
+    cout << disk->size() << endl;
+
+    for (int a = 1; a <= superblock.ninodeblocks; a++) {
+
+        disk->read(a, block.data);
+
+        for (int b = 0; b < INODES_PER_BLOCK; b++) {
+            if (block.inode[b].isvalid) {
+                fblocks_bitmap[a] = 1;
+
+                for (int c = 0; c < POINTERS_PER_INODE; c++) {
+                    if (block.inode[b].direct[c]) { 
+                        fblocks_bitmap[int(block.inode[b].direct[c])] = 1;
                     }
-                    fblocks_bitmap[block.inode[j].direct[a]] = 1;
                 }
-            }
+                if (block.inode[b].indirect) {
+                    fblocks_bitmap[int(block.inode[b].indirect)] = 1;
 
-            if (block.inode[j].indirect) {
-                if (block.inode[j].indirect < 0 || block.inode[j].indirect >= nblocks) {
-                    cerr << "ERROR: Indirect block (" << block.inode[j].indirect << ") is out of bounds!" << endl;
-                    return 0;
-                }
-                fblocks_bitmap[block.inode[j].indirect] = 1;
+                    union fs_block ind_block;
 
-                union fs_block ind_block;
-                disk->read(block.inode[j].indirect, ind_block.data);
-                for (int b = 0; b < POINTERS_PER_BLOCK; b++) {
-                    if (ind_block.pointers[b]) {
-                        if (ind_block.pointers[b] < 0 || ind_block.pointers[b] >= nblocks) {
-                            cerr << "ERROR: Indirect data block (" << ind_block.pointers[b] << ") is out of bounds!" << endl;
-                            return 0;
-                        }
-                        fblocks_bitmap[ind_block.pointers[b]] = 1;
+                    disk->read(block.inode[b].indirect, ind_block.data);
+
+                    for (int d = 0; d < POINTERS_PER_BLOCK; d++) {
+                        fblocks_bitmap[int(ind_block.pointers[d])] = 1;
                     }
                 }
             }
-        }
+        }    
+    }     
+    print_bitmap(fblocks_bitmap);
+    mounted = true;
+    return 1;
+}
+void INE5412_FS::inode_load( int inumber, class fs_inode *inode )
+{
+        if (inumber < 1 || inumber > superblock.ninodes) {
+        cerr << "ERROR: Invalid inumber" << endl;
+        inode->isvalid = 0;
+        return;
     }
+    int block_number = 1 + (inumber - 1) / INODES_PER_BLOCK;
+    int inode_index = (inumber - 1) % INODES_PER_BLOCK;
+    
+    union fs_block block;
+    disk->read(block_number, block.data);
+    *inode = block.inode[inode_index];
 }
 
-	
-	return 1;
-	}
-	
+void INE5412_FS::inode_save( int inumber, class fs_inode *inode ) 
+{
+    if (inumber < 1 || inumber > superblock.ninodes) {
+        cerr << "ERROR: Invalid inumber" << endl;
+        inode->isvalid = 0;
+        return;
+    }
+    int block_number = 1 + (inumber - 1) / INODES_PER_BLOCK;
+    int inode_index = (inumber - 1) % INODES_PER_BLOCK;
+    union fs_block block;
+    disk->read(block_number, block.data);
+    block.inode[inode_index] = *inode;
 
+    disk->write(block_number, block.data);
+}
 
 int INE5412_FS::fs_create()
 {
-	print_bitmap(fblocks_bitmap);
+    if (!mounted) {
+        cerr << "ERROR: Disk is not mounted" << endl;
+        return 0;
+    }
+
+    union fs_block block;
+    disk->read(0, block.data);
+    fs_inode inode;
+    int inumber;
+
+    for (inumber = 1; inumber <= block.super.ninodes; inumber++) {
+        inode_load(inumber, &inode);
+        if (!inode.isvalid) {
+            inode.isvalid = 1;
+            inode.size = 0;
+            for (int i = 0; i < POINTERS_PER_INODE; i++) {
+                inode.direct[i] = 0;
+            }
+            inode.indirect = 0;
+
+            inode_save(inumber, &inode);
+            fs_mount();
+            return inumber;
+        }
+
+    }
+    cerr << "ERROR: inode table is full" << endl;
 	return 0;
 }
 
 int INE5412_FS::fs_delete(int inumber)
 {
-	return 0;
+    if (!mounted) {
+        cerr << "ERROR: Disk is not mounted" << endl;
+        return 0;
+    }
+
+    fs_inode inode;
+    inode_load(inumber, &inode);
+
+    if (!inode.isvalid) {
+        cerr << "ERROR: Invalid inumber" << endl;
+        return 0;
+    }
+
+    inode.isvalid = 0;
+    inode.size = 0;
+
+    for (int i = 0; i < POINTERS_PER_INODE; i++) {
+        if (inode.direct[i]) {
+            fblocks_bitmap[inode.direct[i]] = 0;
+        }
+    }
+    if (inode.indirect) {
+        fblocks_bitmap[inode.indirect] = 0;
+        
+        union fs_block ind_block;
+        disk->read(inode.indirect, ind_block.data);
+        for (int i = 0; i < POINTERS_PER_BLOCK; i++) {
+            if (ind_block.pointers[i]) {
+                fblocks_bitmap[ind_block.pointers[i]] = 0;
+            }
+        }
+    }
+    
+    inode_save(inumber, &inode);
+
+    fs_mount();
+
+    print_bitmap(fblocks_bitmap);
+
+	return 1;
 }
 
 int INE5412_FS::fs_getsize(int inumber)
