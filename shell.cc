@@ -217,7 +217,7 @@ int File_Ops::do_copyin(const char *filename, int inumber, INE5412_FS *fs)
 int File_Ops::do_copyout(int inumber, const char *filename, INE5412_FS *fs)
 {
 	FILE *file;
-	int offset = 2000, result;
+	int offset = 0, result;
 	char buffer[16384];
 
 	file = fopen(filename,"w");

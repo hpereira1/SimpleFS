@@ -13,4 +13,7 @@ disk.o: disk.cc disk.h
 	$(GXX) -Wall disk.cc -c -o disk.o -g
 
 clean:
-	rm simplefs disk.o fs.o shell.o
+	rm -f simplefs disk.o fs.o shell.o
+
+valgrind: simplefs
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./simplefs image.20 20
